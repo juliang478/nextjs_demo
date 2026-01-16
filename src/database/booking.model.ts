@@ -1,7 +1,7 @@
-import mongoose, { Document, Schema, Types } from "mongoose";
-import { Event } from "./event.model";
+import { Schema, model, models, Document, Types } from 'mongoose';
+import Event from './event.model';
 
-// Type for Booking document combining Mongoose Document with custom fields
+// TypeScript interface for Booking document
 export interface IBooking extends Document {
   eventId: Types.ObjectId;
   email: string;
@@ -9,48 +9,66 @@ export interface IBooking extends Document {
   updatedAt: Date;
 }
 
-const bookingSchema = new Schema<IBooking>(
+const BookingSchema = new Schema<IBooking>(
   {
     eventId: {
       type: Schema.Types.ObjectId,
-      ref: "Event",
-      required: [true, "Event ID is required"],
+      ref: 'Event',
+      required: [true, 'Event ID is required'],
     },
     email: {
       type: String,
-      required: [true, "Email is required"],
-      lowercase: true,
+      required: [true, 'Email is required'],
       trim: true,
-      match: [
-        /^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/,
-        "Please provide a valid email address",
-      ],
+      lowercase: true,
+      validate: {
+        validator: function (email: string) {
+          // RFC 5322 compliant email validation regex
+          const emailRegex = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+          return emailRegex.test(email);
+        },
+        message: 'Please provide a valid email address',
+      },
     },
   },
-  { timestamps: true }
+  {
+    timestamps: true, // Auto-generate createdAt and updatedAt
+  }
 );
 
-// Add index on eventId for faster queries
-bookingSchema.index({ eventId: 1 });
+// Pre-save hook to validate events exists before creating booking
+BookingSchema.pre('save', async function () {
+  const booking = this as IBooking;
 
-// Verify that referenced event exists before saving
-bookingSchema.pre("save", async function (next) {
-  if (this.isModified("eventId") || this.isNew) {
+  // Only validate eventId if it's new or modified
+  if (booking.isModified('eventId') || booking.isNew) {
     try {
-      const event = await Event.findById(this.eventId);
-      if (!event) {
-        return next(new Error("Referenced event does not exist"));
+      const eventExists = await Event.findById(booking.eventId).select('_id');
+
+      if (!eventExists) {
+        const error = new Error(`Event with ID ${booking.eventId} does not exist`);
+        error.name = 'ValidationError';
+        throw error;
       }
-    } catch (error) {
-      return next(
-        new Error("Invalid event ID or database error during validation")
-      );
+    } catch {
+      const validationError = new Error('Invalid events ID format or database error');
+      validationError.name = 'ValidationError';
+      throw validationError;
     }
   }
-
-  next();
 });
 
-export const Booking =
-  mongoose.models.Booking ||
-  mongoose.model<IBooking>("Booking", bookingSchema);
+// Create index on eventId for faster queries
+BookingSchema.index({ eventId: 1 });
+
+// Create compound index for common queries (events bookings by date)
+BookingSchema.index({ eventId: 1, createdAt: -1 });
+
+// Create index on email for user booking lookups
+BookingSchema.index({ email: 1 });
+
+// Enforce one booking per events per email
+BookingSchema.index({ eventId: 1, email: 1 }, { unique: true, name: 'uniq_event_email' });
+const Booking = models.Booking || model<IBooking>('Booking', BookingSchema);
+
+export default Booking;
